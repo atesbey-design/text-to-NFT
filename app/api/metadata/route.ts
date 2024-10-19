@@ -1,63 +1,81 @@
+import { v2 as cloudinary } from 'cloudinary';
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
-import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
-const ensureDirectoryExists = async (dirPath: string) => {
-  try {
-    await fs.access(dirPath);
-  } catch (error) {
-    await fs.mkdir(dirPath, { recursive: true });
-  }
-};
+// Cloudinary'yi yapılandırın
+cloudinary.config({
+  cloud_name: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_KEY,
+  api_secret: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_SECRET,
+});
 
-const saveImage = async (imageData: string): Promise<string> => {
+// Görseli Cloudinary'ye yükleyen fonksiyon
+const uploadImageToCloudinary = async (imageData: string): Promise<string> => {
   try {
-    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(base64Data, 'base64');
-    const imageName = `${uuidv4()}.png`;
-    const imagesDir = path.join(process.cwd(), 'public', 'images');
-    await ensureDirectoryExists(imagesDir);
-    const imagePath = path.join(imagesDir, imageName);
-    await fs.writeFile(imagePath, buffer);
-    return `/images/${imageName}`;
+    const result = await cloudinary.uploader.upload(imageData, {
+      folder: 'nft-images', // İstediğiniz bir klasörü belirleyin
+    });
+    return result.secure_url; // Cloudinary'den gelen URL
   } catch (error) {
-    console.error('Error saving image:', error);
+    console.error('Error uploading image to Cloudinary:', error);
     throw error;
   }
 };
 
+// Metadata'yı Cloudinary'ye yükleyen fonksiyon
+const uploadMetadataToCloudinary = async (metadata: object): Promise<string> => {
+  try {
+    const metadataId = uuidv4(); // Metadata için benzersiz ID
+    const metadataFilePath = `/tmp/${metadataId}.json`; // Geçici JSON dosya yolu
+
+    // Metadata'yı geçici bir JSON dosyasına yazıyoruz
+    await fs.writeFile(metadataFilePath, JSON.stringify(metadata, null, 2));
+
+    // JSON dosyasını Cloudinary'ye yüklüyoruz
+    const result = await cloudinary.uploader.upload(metadataFilePath, {
+      folder: 'nft-metadata',
+      resource_type: 'raw', // raw tipi JSON gibi dosyalar için
+    });
+
+    return result.secure_url; // Metadata'nın URL'si
+  } catch (error) {
+    console.error('Error uploading metadata to Cloudinary:', error);
+    throw error;
+  }
+};
+
+// API Route (Vercel üzerinde çalışacak)
 export async function POST(req: Request) {
   try {
+    // İstekten gelen verileri alıyoruz
     const { imageData, name, description } = await req.json();
     console.log("Received data:", name, description);
-    
-    // Save image
-    const savedImagePath = await saveImage(imageData);
 
-    // Create metadata for NFT
+    // Görseli Cloudinary'ye yükle
+    const imageUrl = await uploadImageToCloudinary(imageData);
+
+    // Metadata'yı oluştur
     const metadata = {
-      name: name || `NFT ${path.basename(savedImagePath)}`,
-      description: description || `NFT created from ${path.basename(savedImagePath)}`,
-      image: process.env.NEXT_PUBLIC_URL + savedImagePath,
+      name: name || 'Default NFT Name',
+      description: description || 'Default NFT Description',
+      image: imageUrl,  // Cloudinary'den gelen görsel URL
       attributes: [
         {
-          trait_type: 'image',
-          value: path.basename(savedImagePath)
+          trait_type: 'AI Generated',
+          value: 'True'
         }
       ]
     };
 
-    // Save metadata
-    const metadataId = uuidv4();
-    const metadataDir = path.join(process.cwd(), 'public', 'metadata');
-    await ensureDirectoryExists(metadataDir);
-    const metadataPath = path.join(metadataDir, `${metadataId}.json`);
-    await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
+    // Metadata'yı Cloudinary'ye yükle
+    const metadataUrl = await uploadMetadataToCloudinary(metadata);
 
+    // Frontend'de mint işlemi yapılmak üzere metadata URL'sini döndür
     return NextResponse.json({
-      metadataUrl: process.env.NEXT_PUBLIC_URL + `/metadata/${metadataId}.json`,
-      imageUrl: savedImagePath
+      message: 'Metadata başarıyla oluşturuldu',
+      metadataUrl: metadataUrl, // Frontend'de kullanılacak metadata URL'si
+      imageUrl: imageUrl // İstersen görsel URL'sini de döndürebilirsin
     });
   } catch (error) {
     console.error('Error in POST request:', error);
